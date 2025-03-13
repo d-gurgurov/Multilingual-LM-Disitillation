@@ -1,5 +1,5 @@
 import argparse
-from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, BertConfig, BertForMaskedLM
+from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, AutoConfig
 import torch
 import evaluate
 from torch.utils.data import DataLoader, random_split
@@ -61,8 +61,8 @@ def create_student_model(layer_reduction_factor, parameterization):
     config['num_hidden_layers'] = num_hidden_layers
     
     # Create student config and model
-    student_config = BertConfig.from_dict(config)
-    student_model = BertForMaskedLM(student_config)
+    student_config = AutoConfig.from_dict(config)
+    student_model = AutoModelForMaskedLM(student_config)
     
     if parameterization == 'teacher':
         teacher_state_dict = teacher_model.state_dict()
