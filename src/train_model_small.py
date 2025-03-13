@@ -14,6 +14,7 @@ parser.add_argument("--dataset_path", type=str, required=True, help="Path to the
 parser.add_argument("--output_dir", type=str, required=True, help="Output directory for the fine-tuned model")
 parser.add_argument("--factor", type=int, required=True, help="Layer reduction factor")
 parser.add_argument("--parameterization", type=str, choices=["teacher", "random"], required=True, help="Parameterization method ('teacher' or 'random')")
+parser.add_argument("--language_code", type=str, default="mlt_Latn", help="FLORES-200 language code for validation")
 
 args = parser.parse_args()
 
@@ -26,26 +27,35 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-# Load the dataset
-dataset = load_from_disk(args.dataset_path)
-print("Data loaded!")
+# Load the training dataset
+train_dataset = load_from_disk(args.dataset_path)
+print("Training data loaded!")
+
+# Load FLORES-200 for validation (Maltese by default)
+flores_dataset = load_dataset("facebook/flores", name=args.language_code)
+flores_val_data = flores_dataset["dev"]  # Use the dev split
+print(f"FLORES-200 validation data loaded for {args.language_code}!")
 
 # Initialize the tokenizer
 tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 
-# Tokenize the dataset
+# Tokenize the training dataset
 def tokenize_function(examples):
     return tokenizer(examples['content'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
 
-tokenized_datasets = dataset.map(tokenize_function, batched=True)
-tokenized_datasets = tokenized_datasets.remove_columns(['content', 'warc-target-uri', 'warc-date', 'warc-record-id', 'quality-warnings', 'categories', 'identification-language', 'identification-prob', 'identification-consistency', 'script-percentage', 'num-sents', 'content-length', 'tlsh'])
-tokenized_datasets.set_format("torch")
-print("Data tokenized!")
+tokenized_train_dataset = train_dataset.map(tokenize_function, batched=True)
+tokenized_train_dataset = tokenized_train_dataset.remove_columns(['content', 'warc-target-uri', 'warc-date', 'warc-record-id', 'quality-warnings', 'categories', 'identification-language', 'identification-prob', 'identification-consistency', 'script-percentage', 'num-sents', 'content-length', 'tlsh'])
+tokenized_train_dataset.set_format("torch")
+print("Training data tokenized!")
 
-# Split the dataset into training and validation sets
-val_size = 1000
-train_size = len(tokenized_datasets) - val_size
-train_dataset, val_dataset = random_split(tokenized_datasets, [train_size, val_size])
+# Tokenize the FLORES-200 validation dataset
+def tokenize_flores(examples):
+    return tokenizer(examples['sentence'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
+
+tokenized_val_dataset = flores_val_data.map(tokenize_flores, batched=True)
+tokenized_val_dataset = tokenized_val_dataset.remove_columns([col for col in flores_val_dataset.column_names if col != 'sentence']).remove_columns(['sentence'])
+tokenized_val_dataset.set_format("torch")
+print("Validation data tokenized!")
 
 # Load the teacher model
 teacher_model = AutoModelForMaskedLM.from_pretrained(args.model_name)
@@ -139,8 +149,8 @@ data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probabi
 trainer = Trainer(
     model=student_model,
     args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset,
+    train_dataset=tokenized_train_dataset,
+    eval_dataset=tokenized_val_dataset,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
     preprocess_logits_for_metrics=preprocess_logits_for_metrics,

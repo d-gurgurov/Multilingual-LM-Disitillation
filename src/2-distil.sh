@@ -10,12 +10,13 @@ TEACHER_LOSS="KL"
 TEMPERATURE="2"
 
 # Run Python script with variables
-python distil_mbert_double_loss.py \
+python distil_model.py \
   --model_name "MLRS/mBERTu" \
   --tokenizer_name "MLRS/mBERTu" \
   --dataset_path "data_maltese" \
   --output_dir "./models/maltese/distilled_mbertu_${FACTOR}_${PARAMETERIZATION}_${ALPHA}" \
   --factor $FACTOR \
+  --language_code "mlt_Latn" \
   --parameterization $PARAMETERIZATION \
   --temperature $TEMPERATURE \
   --alpha $TEACHER_LOSS

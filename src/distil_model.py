@@ -192,18 +192,35 @@ class DistillationTrainer(Trainer):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-# Load the Maltese monolingual dataset
-dataset = load_from_disk(args.dataset_path)
-print("Data loaded!")
+# Load the training dataset
+train_dataset = load_from_disk(args.dataset_path)
+print("Training data loaded!")
+
+# Load FLORES-200 for validation (Maltese by default)
+flores_dataset = load_dataset("facebook/flores", name=args.language_code)
+flores_val_data = flores_dataset["dev"]  # Use the dev split
+print(f"FLORES-200 validation data loaded for {args.language_code}!")
 
 # Initialize the tokenizer
 tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 
-# Tokenize the dataset
+# Tokenize the training dataset
 def tokenize_function(examples):
-    # Tokenize the input text, set padding and truncation
-    tokenized = tokenizer(examples['content'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
-    return tokenized
+    return tokenizer(examples['content'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
+
+tokenized_train_dataset = train_dataset.map(tokenize_function, batched=True)
+tokenized_train_dataset = tokenized_train_dataset.remove_columns(['content', 'warc-target-uri', 'warc-date', 'warc-record-id', 'quality-warnings', 'categories', 'identification-language', 'identification-prob', 'identification-consistency', 'script-percentage', 'num-sents', 'content-length', 'tlsh'])
+tokenized_train_dataset.set_format("torch")
+print("Training data tokenized!")
+
+# Tokenize the FLORES-200 validation dataset
+def tokenize_flores(examples):
+    return tokenizer(examples['sentence'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
+
+tokenized_val_dataset = flores_val_data.map(tokenize_flores, batched=True)
+tokenized_val_dataset = tokenized_val_dataset.remove_columns([col for col in flores_val_dataset.column_names if col != 'sentence']).remove_columns(['sentence'])
+tokenized_val_dataset.set_format("torch")
+print("Validation data tokenized!")
 
 metric = evaluate.load("accuracy")
 
@@ -342,8 +359,8 @@ for factor in [args.factor]:
     distill_trainer = DistillationTrainer(
         model=student_model,
         args=distill_training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
+        train_dataset=tokenized_train_dataset,
+        eval_dataset=tokenized_val_dataset,
         teacher_model=teacher_model,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
