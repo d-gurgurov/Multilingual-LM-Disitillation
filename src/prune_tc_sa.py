@@ -7,6 +7,7 @@ from heapq import heappush, heappop
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoConfig
 from torch.utils.data import DataLoader, SequentialSampler
 import logging
+import argparse
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from adapters import AutoAdapterModel, AdapterConfig, AdapterTrainer
@@ -90,16 +91,18 @@ def evaluate_model(model, dataset, device, batch_size=8):
     
     return metrics, preds
 
-def prune_model(model_path, val_dataset, adapter_path, target_num_heads, target_ffn_dim, output_dir, device="cuda"):
+def prune_model(model_path, tokenizer_path, val_dataset, adapter_path, target_num_heads, target_ffn_dim, output_dir, device="cuda"):
     config = AutoConfig.from_pretrained(model_path)
     model = AutoAdapterModel.from_pretrained(model_path)
-    tokenizer = AutoTokenizer.from_pretrained("/netscratch/dgurgurov/projects2025/distillation_mbert/reduce_vocab/maltese_model_0.1")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     
     model.load_adapter(adapter_path)
     if "topic_classification" in model.config.prediction_heads:
         model.set_active_adapters("topic_classification")
     elif "sentiment_classification" in model.config.prediction_heads:
         model.set_active_adapters("sentiment_classification")
+    elif "sentiment_analysis" in model.config.prediction_heads:
+        model.set_active_adapters("sentiment_analysis")
     else:
         print("Neither 'topic_classification' nor 'sentiment_classification' adapters are available.")
     model.to(device)
@@ -272,6 +275,8 @@ def prune_model(model_path, val_dataset, adapter_path, target_num_heads, target_
         model.set_active_adapters("topic_classification")
     elif "sentiment_classification" in model.config.prediction_heads:
         model.set_active_adapters("sentiment_classification")
+    elif "sentiment_analysis" in model.config.prediction_heads:
+        model.set_active_adapters("sentiment_analysis")
     else:
         print("Neither 'topic_classification' nor 'sentiment_classification' adapters are available.")
     
@@ -376,52 +381,57 @@ def test_models(original_model_path, adapter_path, pruned_model_path, test_datas
         "pruned_metrics": pruned_metrics
     }
 
+
 def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Prune transformer model')
+    parser.add_argument('--target_num_heads', type=int, default=12,
+                        help='Target number of attention heads (default: 12)')
+    parser.add_argument('--target_ffn_dim', type=int, default=2048,
+                        help='Target feed-forward network dimension (default: 2048)')
+    parser.add_argument('--output_dir', type=str, default='./pruned_models',
+                        help='Output directory for pruned models (default: ./pruned_models)')
+    parser.add_argument('--adapter_path', type=str, required=True,
+                        help='Path to the adapter')
+    parser.add_argument('--model_path', type=str, default="MLRS/mBERTu",
+                        help='Path to the base model (default: MLRS/mBERTu)')
+    parser.add_argument('--tokenizer_path', type=str, default=None,
+                        help='Path to the tokenizer (default: same as model_path)')
+    parser.add_argument('--device', type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                        help='Device to use for computation (default: cuda if available, else cpu)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed (default: 42)')
+    parser.add_argument('--dataset_type', type=str, choices=['tc', 'sa'], default='tc',
+                        help='Dataset type: topic classification (tc) or sentiment analysis (sa) (default: sa)')
     
-    def find_latest_checkpoint(model_base_path):
-        if not os.path.exists(model_base_path):
-            raise ValueError(f"Model path {model_base_path} does not exist")
-            
-        checkpoints = [d for d in os.listdir(model_base_path) if d.startswith("checkpoint")]
-        if not checkpoints:
-            return model_base_path
-        checkpoints.sort(key=lambda x: int(x.split('-')[-1]))
-        return os.path.join(model_base_path, checkpoints[-1])
+    args = parser.parse_args()
+    
+    print(f"Using device: {args.device}")
+    set_seed(args.seed)
+    
+    # Set tokenizer path to model path if not specified
+    if args.tokenizer_path is None:
+        args.tokenizer_path = args.model_path
     
     print("Loading dataset...")
-    dataset_tc = load_dataset('Davlan/sib200', 'mlt_Latn')
-    dataset_sa = load_dataset('DGurgurov/maltese_sa')
+    if args.dataset_type == 'tc':
+        dataset = load_dataset('Davlan/sib200', 'mlt_Latn')
+        id_column = "category"
+        
+    elif args.dataset_type == 'sa':
+        dataset = load_dataset('DGurgurov/maltese_sa')
+        id_column = "label"
 
-    categories = dataset_tc["train"].unique("category")
+    categories = dataset["train"].unique(id_column)
     category_to_id = {category: idx for idx, category in enumerate(categories)}
     
     def encode_category(example):
-        example["category"] = category_to_id[example["category"]]
+        example[id_column] = category_to_id[example[id_column]]
         return example
     
-    dataset_tc = dataset_tc.map(encode_category)
-
-    categories = dataset_sa["train"].unique("label")
-    category_to_id = {category: idx for idx, category in enumerate(categories)}
+    dataset = dataset.map(encode_category)
     
-    def encode_category(example):
-        example["label"] = category_to_id[example["label"]]
-        return example
-
-    dataset_sa = dataset_sa.map(encode_category)
-
-    model_base_path = "/netscratch/dgurgurov/projects2025/distillation_mbert/reduce_vocab/maltese_model_0.1"
-    try:
-        model_path = find_latest_checkpoint(model_base_path)
-        print(f"Using model from: {model_path}")
-    except ValueError as e:
-        print(f"Error: {e}")
-        print("Using default path instead")
-        model_path = "MLRS/mBERTu" 
-    
-    tokenizer = AutoTokenizer.from_pretrained("/netscratch/dgurgurov/projects2025/distillation_mbert/reduce_vocab/maltese_model_0.1")
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
     
     print("Tokenizing dataset...")
     def encode_batch(examples):
@@ -435,39 +445,31 @@ def main():
         return {
             "input_ids": encoded["input_ids"],
             "attention_mask": encoded["attention_mask"],
-            "labels": examples.get("category", examples.get("label"))
+            "labels": examples.get(id_column)
         }
     
-    encoded_dataset = dataset_sa.map(encode_batch, batched=True)
+    encoded_dataset = dataset.map(encode_batch, batched=True)
     encoded_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    
-    target_num_heads = 12  # Default is usually 12 for base models
-    target_ffn_dim = 2560 - 512  # Default is usually 3072 for base models
-    output_dir = "./pruned_models_sa"
-    seed = 42
-    
-    set_seed(seed)
-
-    adapter_path = "/netscratch/dgurgurov/projects2025/distillation_mbert/sa/distilled_mbertu_2_double_loss_alpha_0.5_mse_unsoft/1/checkpoint-760/sentiment_classification"
     
     print("\n=== Starting Model Pruning ===\n")
     pruning_results = prune_model(
-        model_path=model_path,
-        adapter_path = adapter_path,
+        model_path=args.model_path,
+        tokenizer_path=args.tokenizer_path,
+        adapter_path=args.adapter_path,
         val_dataset=encoded_dataset["train"],
-        target_num_heads=target_num_heads,
-        target_ffn_dim=target_ffn_dim,
-        output_dir=output_dir,
-        device=device
+        target_num_heads=args.target_num_heads,
+        target_ffn_dim=args.target_ffn_dim,
+        output_dir=args.output_dir,
+        device=args.device
     )
     
     print("\n=== Starting Model Testing ===\n")
     test_results = test_models(
-        original_model_path=model_path,
-        adapter_path = adapter_path,
+        original_model_path=args.model_path,
+        adapter_path=args.adapter_path,
         pruned_model_path=pruning_results["pruned_model_path"],
         test_dataset=encoded_dataset["test"],
-        device=device
+        device=args.device
     )
     
     print("\n=== Final Summary ===")
@@ -483,15 +485,15 @@ def main():
     print(f"Original model test F1: {test_results['original_metrics']['f1']:.4f}")
     print(f"Pruned model test F1: {test_results['pruned_metrics']['f1']:.4f}")
     
-    results_dir = os.path.join(output_dir, "results")
+    results_dir = os.path.join(args.output_dir, "results")
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
         
-    with open(os.path.join(results_dir, f"pruning_results_{target_num_heads}_{target_ffn_dim}.txt"), "w") as f:
+    with open(os.path.join(results_dir, f"pruning_results_{args.target_num_heads}_{args.target_ffn_dim}.txt"), "w") as f:
         f.write("=== Pruning Configuration ===\n")
-        f.write(f"Target number of attention heads: {target_num_heads}\n")
-        f.write(f"Target FFN dimension: {target_ffn_dim}\n")
-        f.write(f"Original model: {model_path}\n")
+        f.write(f"Target number of attention heads: {args.target_num_heads}\n")
+        f.write(f"Target FFN dimension: {args.target_ffn_dim}\n")
+        f.write(f"Original model: {args.model_path}\n")
         f.write(f"Pruned model: {pruning_results['pruned_model_path']}\n\n")
         
         f.write("=== Parameter Reduction ===\n")
@@ -507,7 +509,7 @@ def main():
         f.write(f"Original model: {test_results['original_metrics']}\n")
         f.write(f"Pruned model: {test_results['pruned_metrics']}\n")
     
-    print(f"\nResults saved to {os.path.join(results_dir, f'pruning_results_{target_num_heads}_{target_ffn_dim}.txt')}")
+    print(f"\nResults saved to {os.path.join(results_dir, f'pruning_results_{args.target_num_heads}_{args.target_ffn_dim}.txt')}")
     return pruning_results, test_results
 
 if __name__ == "__main__":
