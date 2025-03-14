@@ -71,8 +71,14 @@ def create_student_model(layer_reduction_factor, parameterization):
     config['num_hidden_layers'] = num_hidden_layers
     
     # Create student config and model
-    student_config = AutoConfig.from_dict(config)
-    student_model = AutoModelForMaskedLM(student_config)
+    if "bert" in str(args.model_name).lower():
+        student_config = BertConfig.from_dict(config)
+        student_model = BertForMaskedLM(student_config)
+        print("Using BERT config!")
+    elif "xlm" in str(args.model_name).lower():
+        student_config = XLMRobertaConfig.from_dict(config)
+        student_model = XLMRobertaForMaskedLM(student_config)
+        print("Using XLM-R config!")
     
     if parameterization == 'teacher':
         teacher_state_dict = teacher_model.state_dict()
