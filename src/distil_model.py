@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset
 import json
 import os
 

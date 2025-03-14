@@ -3,7 +3,7 @@ from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModelFor
 import torch
 import evaluate
 from torch.utils.data import DataLoader, random_split
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset
 import os
 
 # Argument parser setup
