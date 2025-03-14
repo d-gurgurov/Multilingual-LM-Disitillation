@@ -19,4 +19,4 @@ python distil_model.py \
   --language_code "mlt_Latn" \
   --parameterization $PARAMETERIZATION \
   --temperature $TEMPERATURE \
-  --alpha $TEACHER_LOSS
+  --alpha $ALPHA
