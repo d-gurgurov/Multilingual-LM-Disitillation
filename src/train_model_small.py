@@ -53,7 +53,7 @@ def tokenize_flores(examples):
     return tokenizer(examples['sentence'], truncation=True, max_length=512, padding='max_length', return_special_tokens_mask=True)
 
 tokenized_val_dataset = flores_val_data.map(tokenize_flores, batched=True)
-tokenized_val_dataset = tokenized_val_dataset.remove_columns([col for col in flores_val_dataset.column_names if col != 'sentence']).remove_columns(['sentence'])
+tokenized_val_dataset = tokenized_val_dataset.remove_columns([col for col in flores_val_data.column_names if col != 'sentence']).remove_columns(['sentence'])
 tokenized_val_dataset.set_format("torch")
 print("Validation data tokenized!")
 
