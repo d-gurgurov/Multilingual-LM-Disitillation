@@ -1,4 +1,4 @@
-from transformers import Trainer, TrainingArguments, AutoConfig, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling
+from transformers import Trainer, TrainingArguments, AutoConfig, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, XLMRobertaConfig, BertConfig
 import evaluate
 import torch
 import torch.nn.functional as F
@@ -244,16 +244,6 @@ def compute_metrics(eval_preds):
         preds = preds[mask]
         return metric.compute(predictions=preds, references=labels)
 
-tokenized_datasets = dataset.map(tokenize_function, batched=True)
-tokenized_datasets = tokenized_datasets.remove_columns(['content', 'warc-target-uri', 'warc-date', 'warc-record-id', 'quality-warnings', 'categories', 'identification-language', 'identification-prob', 'identification-consistency', 'script-percentage', 'num-sents', 'content-length', 'tlsh'])
-tokenized_datasets.set_format("torch")
-print("Data tokenized!")
-
-# Split the dataset into training and validation sets
-val_size = 1000
-train_size = len(tokenized_datasets) - val_size
-train_dataset, val_dataset = random_split(tokenized_datasets, [train_size, val_size])
-
 # Load the teacher model
 teacher_model = AutoModelForMaskedLM.from_pretrained(args.model_name)
 teacher_model.eval()
@@ -268,9 +258,17 @@ def create_student_model(layer_reduction_factor, parameterization='teacher'):
     num_hidden_layers = original_num_layers // layer_reduction_factor
     config['num_hidden_layers'] = num_hidden_layers
     
-    # Create a proper configuration object for mBERT (BertConfig)
-    student_config = AutoConfig.from_dict(config)
-    student_model = AutoModelForMaskedLM(student_config)
+    from transformers import XLMRobertaForMaskedLM, BertForMaskedLM
+
+    # Create student config and model
+    if "bert" in str(args.model_name).lower():
+        student_config = BertConfig.from_dict(config)
+        student_model = BertForMaskedLM(student_config)
+        print("Using BERT config!")
+    elif "xlm" in str(args.model_name).lower():
+        student_config = XLMRobertaConfig.from_dict(config)
+        student_model = XLMRobertaForMaskedLM(student_config)
+        print("Using XLM-R config!")
     
     if parameterization == 'teacher':
         # Get state dictionaries
