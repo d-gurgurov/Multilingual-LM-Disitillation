@@ -249,16 +249,17 @@ teacher_model = AutoModelForMaskedLM.from_pretrained(args.model_name)
 teacher_model.eval()
 print("Teacher model loaded!")
 
-def create_student_model(layer_reduction_factor, parameterization='teacher'):
+# Function to create student model
+from transformers import XLMRobertaForMaskedLM, BertForMaskedLM, XLMRobertaConfig, BertConfig
+
+def create_student_model(layer_reduction_factor, parameterization='teacher', layer_selection='stride'):
     # Create a new configuration based on the teacher's config
     config = teacher_model.config.to_dict()
-    
+
     # Calculate the number of layers for the student model
     original_num_layers = config['num_hidden_layers']
     num_hidden_layers = original_num_layers // layer_reduction_factor
     config['num_hidden_layers'] = num_hidden_layers
-    
-    from transformers import XLMRobertaForMaskedLM, BertForMaskedLM
 
     # Create student config and model
     if "bert" in str(args.model_name).lower():
@@ -269,7 +270,9 @@ def create_student_model(layer_reduction_factor, parameterization='teacher'):
         student_config = XLMRobertaConfig.from_dict(config)
         student_model = XLMRobertaForMaskedLM(student_config)
         print("Using XLM-R config!")
-    
+    else:
+        raise ValueError("Unknown model type. Ensure model_name contains 'bert' or 'xlm'.")
+
     if parameterization == 'teacher':
         # Get state dictionaries
         teacher_state_dict = teacher_model.state_dict()
@@ -277,48 +280,53 @@ def create_student_model(layer_reduction_factor, parameterization='teacher'):
 
         # Create a new state dict for the student model
         new_state_dict = {}
-        
-        # Copy embedding and other non-layer specific weights
+
+        # Copy embedding and other non-layer-specific weights
         for key in student_state_dict.keys():
             if 'encoder.layer' not in key:
                 if key in teacher_state_dict:
                     new_state_dict[key] = teacher_state_dict[key].clone()
-        
-        # Copy layer weights with the correct stride
-        for i in range(num_hidden_layers):
-            teacher_layer_idx = i * layer_reduction_factor
-            
-            # Make sure we don't exceed the teacher's layer count
-            if teacher_layer_idx >= original_num_layers:
-                teacher_layer_idx = original_num_layers - 1
-            
-            # Find all keys for this student layer and copy from corresponding teacher layer
+
+        # Select layers based on the chosen method
+        if layer_selection == 'stride':
+            selected_layers = [i * layer_reduction_factor for i in range(num_hidden_layers)]
+        elif layer_selection == 'first_k':
+            selected_layers = list(range(num_hidden_layers))
+        elif layer_selection == 'last_k':
+            selected_layers = list(range(original_num_layers - num_hidden_layers, original_num_layers))
+        else:
+            raise ValueError(f"Unknown layer selection method: {layer_selection}. Choose 'stride', 'first_k', or 'last_k'.")
+
+        # Copy layer weights
+        for i, teacher_layer_idx in enumerate(selected_layers):
+            # Ensure we don't exceed the teacher's layer count
+            teacher_layer_idx = min(teacher_layer_idx, original_num_layers - 1)
+
             for key in student_state_dict.keys():
                 if f"encoder.layer.{i}." in key:
                     teacher_key = key.replace(f"encoder.layer.{i}.", f"encoder.layer.{teacher_layer_idx}.")
                     if teacher_key in teacher_state_dict:
                         new_state_dict[key] = teacher_state_dict[teacher_key].clone()
-        
+
         # Load the weights into the student model
         missing_keys, unexpected_keys = student_model.load_state_dict(new_state_dict, strict=False)
-        
+
         print(f"Missing keys: {len(missing_keys)}")
         print(f"Unexpected keys: {len(unexpected_keys)}")
-        
-        if len(missing_keys) > 0:
+
+        if missing_keys:
             print("Sample missing keys:", missing_keys[:3])
-        
+
         print("Parameters successfully copied from teacher")
-    
+
     elif parameterization == 'random':
         # Explicitly reset all parameters to random initialization
         student_model.init_weights()
         print("Parameters randomly initialized")
-    
+
     else:
-        raise ValueError(f"Unknown parameterization method: {parameterization}. "
-                         "Choose 'teacher' or 'random'.")
-    
+        raise ValueError(f"Unknown parameterization method: {parameterization}. Choose 'teacher' or 'random'.")
+
     return student_model
 
 # Distill models with different layer reduction factors
