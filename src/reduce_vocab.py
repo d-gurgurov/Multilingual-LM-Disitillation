@@ -18,9 +18,11 @@ def parse_arguments():
                         help='Name for the output model directory')
     parser.add_argument('--threshold_percent', type=float, default=0.005,
                         help='Threshold percentage for token selection (default: 0.005)')
+    parser.add_argument('--target_vocab_size', type=int, default=None,
+                        help='Target vocabulary size (overrides threshold_percent if specified)')
     parser.add_argument('--output_dir', type=str, default='reduce_vocab',
                         help='Directory to save the output model (default: reduce_vocab)')
-    parser.add_argument('--tokens_dir', type=str, default='tokens_freqs',
+    parser.add_argument('--tokens_dir', type=str, default='reduce_vocab',
                         help='Directory to save token frequencies (default: tokens_freqs)')
     return parser.parse_args()
 
@@ -88,7 +90,8 @@ def main():
     os.makedirs(args.tokens_dir, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
     output_path = os.path.join(args.output_dir, args.output_name)
-    
+    os.makedirs(output_path, exist_ok=True)
+
     print(f"Loading dataset from {args.dataset_path}")
     dataset = load_from_disk(args.dataset_path)
     print("Data loaded!")
@@ -97,7 +100,7 @@ def main():
     tokenizer = BertTokenizer.from_pretrained(args.tokenizer_name)
     
     print(f"Loading model from {args.model_name}")
-    model = BertForMaskedLM.from_pretrained(args.model_name)
+    model = BertForMaskedLM.from_pretrained(args.model_name, attn_implementation="eager")
 
     # Extract vocabulary
     bert_vocab = list(tokenizer.vocab.keys())
@@ -125,19 +128,44 @@ def main():
         json.dump(lang_tokens, outfile)
     print(f"Token frequencies saved to {freq_file}")
 
-    # Select most frequent tokens based on threshold
-    thresh = int(len(dataset["content"]) * args.threshold_percent / 100)
-    selected_tokens = [tok for tok, count in lang_tokens_unique.items() if count >= thresh]
-
+    # Define essential tokens that must be kept
+    TOKENS_TO_KEEP = ['[PAD]', '[UNK]', '[CLS]', '[SEP]', '[MASK]']
+    
+    # Select tokens based on target vocabulary size or threshold
+    if args.target_vocab_size is not None:
+        print(f"Using target vocabulary size: {args.target_vocab_size}")
+        # Sort tokens by frequency (most frequent first)
+        sorted_tokens = sorted(lang_tokens_unique.items(), key=lambda x: x[1], reverse=True)
+        # Select top N tokens where N is the target vocab size minus essential tokens
+        target_size = args.target_vocab_size + len(TOKENS_TO_KEEP)
+        if target_size <= 0:
+            raise ValueError(f"Target vocabulary size ({args.target_vocab_size}) must be greater than the number of essential tokens ({len(TOKENS_TO_KEEP)})")
+        
+        # Make sure we don't try to select more tokens than we have
+        target_size = min(target_size, len(sorted_tokens))
+        
+        # Select the top N most frequent tokens
+        selected_tokens = [tok for tok, _ in sorted_tokens[:target_size]]
+    else:
+        print(f"Using threshold percentage: {args.threshold_percent}%")
+        # Use threshold-based selection
+        thresh = int(len(dataset["content"]) * args.threshold_percent / 100)
+        print(f"Minimum document frequency threshold: {thresh}")
+        selected_tokens = [tok for tok, count in lang_tokens_unique.items() if count >= thresh]
+    
     # Ensure essential tokens remain
-    TOKENS_TO_KEEP = ['[PAD]','[UNK]','[CLS]','[SEP]','[MASK]']
     selected_tokens = list(set(selected_tokens + TOKENS_TO_KEEP))
     print("New vocab size:", len(selected_tokens))
+
+    # Output token stats
+    print(f"Vocabulary reduction: {len(bert_vocab)} → {len(selected_tokens)} tokens")
+    print(f"Reduction ratio: {len(selected_tokens)/len(bert_vocab):.2%}")
 
     print("Creating reduced vocabulary model...")
     start_time = time.time()
     reduced_model = ReducedVocabBert(model, selected_tokens, output_path)
     print("Reduced number of model parameters:", reduced_model.model.num_parameters())
+    print("Parameter reduction ratio:", f"{reduced_model.model.num_parameters()/model.num_parameters():.2%}")
     print("Time taken for model reduction:", time.time() - start_time)
 
 if __name__ == "__main__":
