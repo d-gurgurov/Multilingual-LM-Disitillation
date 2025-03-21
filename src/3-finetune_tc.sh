@@ -15,10 +15,11 @@ for SEED in 1 2 3; do
     export PYTHONHASHSEED=$SEED
 
     python3 $SCRIPT --seed $SEED \
-                    --model_path ./models/maltese/mbertu_finetuned \
-                    --tokenizer_path MLRS/mBERTu \
+                    --model_path google-bert/bert-base-multilingual-cased \
                     --output_dir ./tc/maltese/ \
-                    --language mlt_Latn
+                    --language mlt_Latn \
+                    --tokenizer_path google-bert/bert-base-multilingual-cased
+                    # --tokenizer_path /netscratch/dgurgurov/projects2025/distillation_mbert/reduce_vocab/distilled_mbert-mt_2_teacher_0.5_last_k_12_2048_vocab_reduce/checkpoint-100 \
 
     echo "Experiment with seed $SEED completed."
 done
