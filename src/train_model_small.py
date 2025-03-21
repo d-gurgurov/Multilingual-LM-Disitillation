@@ -1,5 +1,5 @@
 import argparse
-from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, AutoConfig
+from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, XLMRobertaConfig, BertConfig
 import torch
 import evaluate
 from torch.utils.data import DataLoader, random_split
@@ -15,7 +15,10 @@ parser.add_argument("--output_dir", type=str, required=True, help="Output direct
 parser.add_argument("--factor", type=int, required=True, help="Layer reduction factor")
 parser.add_argument("--parameterization", type=str, choices=["teacher", "random"], required=True, help="Parameterization method ('teacher' or 'random')")
 parser.add_argument("--language_code", type=str, default="mlt_Latn", help="FLORES-200 language code for validation")
-
+parser.add_argument("--layer_selection", type=str, default="stride", help="Layer selection for student initialization")
+parser.add_argument("--student_model_path", type=str, default=None, help="Student model path")
+parser.add_argument("--tiny_model_init", type=str, default=None, help="Tiny model init")
+parser.add_argument("--hidden_size", type=int, default=312, help="Tiny model hidden size")
 args = parser.parse_args()
 
 # Set random seed for reproducibility
@@ -61,10 +64,191 @@ print("Validation data tokenized!")
 teacher_model = AutoModelForMaskedLM.from_pretrained(args.model_name)
 print("Teacher model loaded!")
 
-# Function to create student model
+def transfer_weights_by_svd(original_model, modified_model):
+    """
+    Transfer weights from original model to modified model using SVD for dimensionality reduction.
+    
+    Args:
+        original_model: Source BERT model
+        modified_model: Target BERT model with reduced dimensions
+        
+    Returns:
+        modified_model: Model with transferred weights
+    """
+    # Get the dimension reduction parameters
+    orig_hidden_size = original_model.config.hidden_size
+    new_hidden_size = modified_model.config.hidden_size
+    orig_intermediate_size = original_model.config.intermediate_size
+    new_intermediate_size = modified_model.config.intermediate_size
+    
+    # Get state dictionaries
+    orig_state_dict = original_model.state_dict()
+    mod_state_dict = modified_model.state_dict()
+    
+    # Process each parameter
+    for name, param in orig_state_dict.items():
+        # Skip if parameter doesn't exist in modified model
+        if name not in mod_state_dict:
+            print(f"Skipping parameter {name} as it doesn't exist in modified model")
+            continue
+        
+        # Get the target parameter shape
+        target_shape = mod_state_dict[name].shape
+        
+        # Check tensor dimensionality
+        if len(param.shape) < 2:
+            # For 1D tensors (biases, etc.), just truncate or pad as needed
+            if len(target_shape) == 1:
+                if target_shape[0] <= param.shape[0]:
+                    # Truncate
+                    mod_state_dict[name] = param[:target_shape[0]]
+                else:
+                    # Pad (unlikely scenario)
+                    mod_state_dict[name] = torch.nn.functional.pad(param, (0, target_shape[0] - param.shape[0]))
+            else:
+                print(f"Dimension mismatch for {name}: cannot convert 1D to {len(target_shape)}D")
+            continue
+            
+        # Handle embeddings (keep all vocab but reduce embedding dimension)
+        if 'embeddings.word_embeddings.weight' in name or 'embeddings.position_embeddings.weight' in name or 'embeddings.token_type_embeddings.weight' in name:
+            # For embeddings, we need to reduce the embedding dimension
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            # Ensure we don't exceed the available singular values
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle attention query, key, value weights
+        elif any(x in name for x in ['query', 'key', 'value']) and 'weight' in name:
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle attention output projection
+        elif 'attention.output.dense.weight' in name:
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle intermediate layer projection
+        elif 'intermediate.dense.weight' in name:
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            k = min(new_intermediate_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle output layer projection
+        elif 'output.dense.weight' in name and not 'attention' in name:
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle classifier/MLM head
+        elif 'cls' in name and 'weight' in name and not 'predictions.decoder' in name:
+            u, s, vh = torch.linalg.svd(param, full_matrices=False)
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+        
+        # Handle decoder projection (vocabulary projection)
+        elif 'predictions.decoder.weight' in name:
+            # For decoder, we need to reduce the input dimension but keep the vocab size
+            u, s, vh = torch.linalg.svd(param.T, full_matrices=False)
+            k = min(new_hidden_size, len(s))
+            reduced_param = torch.matmul(u[:, :k], torch.diag(s[:k]) @ vh[:k, :])
+            mod_state_dict[name] = reduced_param.T[:target_shape[0], :target_shape[1]]
+        
+        # Handle biases and LayerNorm parameters (direct copy or truncate)
+        elif 'bias' in name or 'LayerNorm' in name:
+            if param.shape == target_shape:
+                mod_state_dict[name] = param.clone()
+            else:
+                # For 1D tensors, just truncate
+                if len(param.shape) == 1 and len(target_shape) == 1:
+                    mod_state_dict[name] = param[:target_shape[0]]
+                else:
+                    print(f"Complex shape mismatch for {name}: {param.shape} vs {target_shape}")
+        
+        # Handle any other parameters - fallback to trying to match shapes
+        else:
+            if param.shape == target_shape:
+                mod_state_dict[name] = param.clone()
+            else:
+                print(f"Shape mismatch for {name}: {param.shape} vs {target_shape} - attempting reshape")
+                try:
+                    if len(param.shape) == 2:
+                        # For 2D matrices, use SVD
+                        u, s, vh = torch.linalg.svd(param, full_matrices=False)
+                        min_dim = min(min(target_shape), len(s))
+                        reduced_param = torch.matmul(u[:, :min_dim], torch.diag(s[:min_dim]) @ vh[:min_dim, :])
+                        mod_state_dict[name] = reduced_param[:target_shape[0], :target_shape[1]]
+                    else:
+                        # For other shapes, try to truncate
+                        slices = tuple(slice(0, dim) for dim in target_shape)
+                        mod_state_dict[name] = param[slices].clone()
+                except Exception as e:
+                    print(f"Failed to transfer parameter {name} with shape {param.shape}: {e}")
+    
+    # Load the modified state dict
+    modified_model.load_state_dict(mod_state_dict)
+    
+    return modified_model
+
+def transfer_weights_by_truncation(original_model, modified_model):
+        """
+        Transfer weights from original model to modified model by simple truncation.
+        Takes the first k weights/units from each layer without SVD.
+        
+        Args:
+            original_model: Source BERT model
+            modified_model: Target BERT model with reduced dimensions
+            
+        Returns:
+            modified_model: Model with transferred weights
+        """
+        # Get state dictionaries
+        orig_state_dict = original_model.state_dict()
+        mod_state_dict = modified_model.state_dict()
+        
+        # Process each parameter
+        for name, param in orig_state_dict.items():
+            # Skip if parameter doesn't exist in modified model
+            if name not in mod_state_dict:
+                print(f"Skipping parameter {name} as it doesn't exist in modified model")
+                continue
+            
+            # Get the target parameter shape
+            target_shape = mod_state_dict[name].shape
+            
+            # Simple truncation approach
+            try:
+                if len(param.shape) == 1:
+                    # For 1D tensors (biases, etc.), just take the first k elements
+                    mod_state_dict[name] = param[:target_shape[0]].clone()
+                
+                elif len(param.shape) == 2:
+                    # For 2D matrices, truncate both dimensions
+                    mod_state_dict[name] = param[:target_shape[0], :target_shape[1]].clone()
+                
+                else:
+                    # For higher dimension tensors, use slicing
+                    slices = tuple(slice(0, dim) for dim in target_shape)
+                    mod_state_dict[name] = param[slices].clone()
+                    
+            except Exception as e:
+                print(f"Failed to transfer parameter {name} with shape {param.shape}: {e}")
+        
+        # Load the modified state dict
+        modified_model.load_state_dict(mod_state_dict)
+        
+        return modified_model
+
 from transformers import XLMRobertaForMaskedLM, BertForMaskedLM, XLMRobertaConfig, BertConfig
 
-def create_student_model(layer_reduction_factor, parameterization='teacher', layer_selection='stride'):
+def create_student_model(layer_reduction_factor, parameterization='teacher', layer_selection='stride', student_model_path=args.student_model_path, tiny_model_init=args.tiny_model_init):
     # Create a new configuration based on the teacher's config
     config = teacher_model.config.to_dict()
 
@@ -106,6 +290,9 @@ def create_student_model(layer_reduction_factor, parameterization='teacher', lay
             selected_layers = list(range(num_hidden_layers))
         elif layer_selection == 'last_k':
             selected_layers = list(range(original_num_layers - num_hidden_layers, original_num_layers))
+        elif layer_selection == 'first_last_k':
+            half_k = num_hidden_layers // 2
+            selected_layers = list(range(half_k)) + list(range(original_num_layers - half_k, original_num_layers))
         else:
             raise ValueError(f"Unknown layer selection method: {layer_selection}. Choose 'stride', 'first_k', or 'last_k'.")
 
@@ -139,7 +326,36 @@ def create_student_model(layer_reduction_factor, parameterization='teacher', lay
     else:
         raise ValueError(f"Unknown parameterization method: {parameterization}. Choose 'teacher' or 'random'.")
 
+    def modify_bert_model(model, hidden_size=312, intermediate_size=2048, num_attention_heads=12):
+        config = model.config
+        
+        # Update model config
+        config.hidden_size = hidden_size
+        config.intermediate_size = intermediate_size
+        config.num_attention_heads = num_attention_heads  
+        
+        # Ensure hidden_size is divisible by num_attention_heads
+        assert hidden_size % num_attention_heads == 0, "hidden_size must be divisible by num_attention_heads!"
+        
+        # Reinitialize model with modified config
+        new_model = AutoModelForMaskedLM.from_config(config)
+        
+        return new_model
+
+    if student_model_path is not None:
+        hidden_size=args.hidden_size
+        intermediate_size=2048
+        student_model_path = AutoModelForMaskedLM.from_pretrained(student_model_path)
+        modified_model = modify_bert_model(student_model_path, hidden_size=hidden_size, intermediate_size=intermediate_size, num_attention_heads=12)
+        if tiny_model_init == "truncation":
+            student_model = transfer_weights_by_truncation(student_model_path, modified_model)
+        elif tiny_model_init == "svd":
+            student_model = transfer_weights_by_svd(student_model_path, modified_model)
+        
+        print(f"Using the modified model with smaller hidden ({hidden_size}) and intermediate ({intermediate_size}) sizes")
+        print(f"Using {tiny_model_init} initialization for hidden size")
     return student_model
+
 
 # Preprocessing and evaluation functions
 def preprocess_logits_for_metrics(logits, labels):
@@ -156,7 +372,7 @@ def compute_metrics(eval_preds):
 
 # Create and train the student model
 print(f"\nTraining student model with {args.factor}x fewer layers and {args.parameterization} parameterization...")
-student_model = create_student_model(layer_reduction_factor=args.factor, parameterization=args.parameterization)
+student_model = create_student_model(layer_reduction_factor=args.factor, parameterization=args.parameterization, layer_selection=args.layer_selection)
 print("Student model initialized!")
 
 total_params = count_parameters(student_model)
