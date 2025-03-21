@@ -8,6 +8,7 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer, AutoConfig, DataCo
 from torch.utils.data import DataLoader, SequentialSampler
 import logging
 from datasets import load_dataset
+import argparse
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +263,8 @@ def prune_model(model_path, val_dataset, tokenizer, target_num_heads, target_ffn
         layers[layer_num].output.dense.weight = torch.nn.Parameter(weight_sorted)
     
     # Update model configuration for the pruned model
-    pruned_dir = os.path.join(output_dir, f"pruned_mlm_{target_num_heads}_{target_ffn_dim}")
+    output_name = model_path.split('/')[-2]
+    pruned_dir = os.path.join(output_dir, f"{output_name}_{target_num_heads}_{target_ffn_dim}")
     if not os.path.exists(pruned_dir):
         os.makedirs(pruned_dir)
     
@@ -377,13 +379,39 @@ def test_models(original_model_path, pruned_model_path, test_dataset, tokenizer,
     }
 
 def main():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Prune transformer model')
+    parser.add_argument('--target_num_heads', type=int, default=12,
+                        help='Target number of attention heads (default: 12)')
+    parser.add_argument('--target_ffn_dim', type=int, default=2048,
+                        help='Target feed-forward network dimension (default: 2048)')
+    parser.add_argument('--output_dir', type=str, default='./pruned_models',
+                        help='Output directory for pruned models (default: ./pruned_models)')
+    parser.add_argument('--model_path', type=str, default="MLRS/mBERTu",
+                        help='Path to the base model (default: MLRS/mBERTu)')
+    parser.add_argument('--tokenizer_path', type=str, default=None,
+                        help='Path to the tokenizer (default: same as model_path)')
+    parser.add_argument('--device', type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                        help='Device to use for computation (default: cuda if available, else cpu)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed (default: 42)')
+    parser.add_argument('--language', type=str, default="mlt_Latn")
     
-    seed = 42
+    args = parser.parse_args()
+    
+    print(f"Using device: {args.device}")
+    
+    # Set tokenizer path to model path if not specified
+    if args.tokenizer_path is None:
+        args.tokenizer_path = args.model_path
+
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
+    
+    seed = args.seed
     set_seed(seed)
     
-    language_code = "mlt_Latn"
+    language_code = args.language
     print(f"Loading FLORES-200 dataset for {language_code}...")
     flores_dataset = load_dataset("facebook/flores", language_code)
     flores_val_data = flores_dataset["dev"]
@@ -391,14 +419,13 @@ def main():
     
     flores_test_data = flores_dataset["devtest"] 
     
-    model_path = "/netscratch/dgurgurov/projects2025/distillation_mbert/reduce_vocab/maltese_model_0.1"
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model_path = args.model_path
     
     print("Tokenizing FLORES-200 dataset...")
     def tokenize_function(examples):
         return tokenizer(
             examples["sentence"], 
-            max_length=128, 
+            max_length=512, 
             truncation=True, 
             padding="max_length"
         )
@@ -418,9 +445,9 @@ def main():
     tokenized_val_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
     tokenized_test_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
     
-    target_num_heads = 12  # Default is usually 12 for base models
-    target_ffn_dim = 1024 + 1024 + 512  # Default is usually 3072 for base models
-    output_dir = "./pruned_models_mlm"
+    target_num_heads = args.target_num_heads  # Default is usually 12 for base models
+    target_ffn_dim = args.target_ffn_dim  # Default is usually 3072 for base models
+    output_dir = args.output_dir
     
     print("\n=== Starting Model Pruning with MLM Criterion ===\n")
     pruning_results = prune_model(
@@ -430,7 +457,7 @@ def main():
         target_num_heads=target_num_heads,
         target_ffn_dim=target_ffn_dim,
         output_dir=output_dir,
-        device=device
+        device=args.device
     )
     
     print("\n=== Starting Model Testing ===\n")
@@ -439,7 +466,7 @@ def main():
         pruned_model_path=pruning_results["pruned_model_path"],
         test_dataset=tokenized_test_dataset,
         tokenizer=tokenizer,
-        device=device
+        device=args.device
     )
     
     print("\n=== Final Summary ===")
@@ -460,8 +487,11 @@ def main():
     results_dir = os.path.join(output_dir, "results")
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
+
+    model_identifier = model_path.split("/")[-2]
+    print(model_path)
         
-    with open(os.path.join(results_dir, f"pruning_results_{target_num_heads}_{target_ffn_dim}.txt"), "w") as f:
+    with open(os.path.join(results_dir, f"{model_identifier}_{target_num_heads}_{target_ffn_dim}.txt"), "w") as f:
         f.write("=== Pruning Configuration ===\n")
         f.write(f"Target number of attention heads: {target_num_heads}\n")
         f.write(f"Target FFN dimension: {target_ffn_dim}\n")
@@ -485,7 +515,7 @@ def main():
         f.write(f"Original model MLM accuracy: {test_results['original_metrics']['masked_lm_accuracy']:.4f}\n")
         f.write(f"Pruned model MLM accuracy: {test_results['pruned_metrics']['masked_lm_accuracy']:.4f}\n")
     
-    print(f"\nResults saved to {os.path.join(results_dir, f'pruning_results_{target_num_heads}_{target_ffn_dim}.txt')}")
+    print(f"\nResults saved to {os.path.join(results_dir, f'{model_identifier}_{target_num_heads}_{target_ffn_dim}.txt')}")
     return pruning_results, test_results
 
 if __name__ == "__main__":
