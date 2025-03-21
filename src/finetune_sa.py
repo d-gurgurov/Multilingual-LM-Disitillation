@@ -29,12 +29,26 @@ from adapters import AutoAdapterModel, AdapterConfig, AdapterTrainer
 from adapters.composition import Stack
 import evaluate
 
-def find_latest_checkpoint(model_base_path: str) -> str:
-    """Finds the latest checkpoint directory for the given language."""
-    checkpoints = [d for d in os.listdir(model_base_path) if d.startswith("checkpoint")]
-    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))  # Sort by checkpoint number
-    return os.path.join(model_base_path, checkpoints[-1])
+def find_latest_checkpoint(model_path: str) -> str:
+    """
+    Finds the latest checkpoint directory within the given model folder.
+    """
+    # Try loading from Hugging Face if not found locally
+    print(f"Model not found locally. Attempting to load from Hugging Face: {model_path}")
+    try:
+        AutoAdapterModel.from_pretrained(model_path)
+        model = model_path
+        return model
+    except Exception as e:
+       print(f"Model not found in local directories or Hugging Face: {e}")
 
+    checkpoints = [d for d in os.listdir(model_path) if d.startswith("checkpoint")]
+    if not checkpoints:
+        return model_path  # If no checkpoint folders, assume model is in base path
+    
+    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))  # Sort by checkpoint number
+    return os.path.join(model_path, checkpoints[-1])  # Return latest checkpoint path
+    
 # Load dataset for sentiment analysis
 dataset = load_dataset(args.dataset)
 categories = dataset["train"].unique("label")
@@ -83,7 +97,9 @@ model.add_classification_head(adapter_name, num_labels=num_labels)
 model.train_adapter([adapter_name])
 
 # Create output directory
+print(args.model_path)
 model_name = os.path.basename(args.model_path)
+print(model_name)
 output_dir = os.path.join(args.output_dir, model_name, str(seed_value))
 os.makedirs(output_dir, exist_ok=True)
 

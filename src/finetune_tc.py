@@ -29,12 +29,26 @@ from adapters import AutoAdapterModel, AdapterConfig, AdapterTrainer
 from adapters.composition import Stack
 import evaluate
 
-def find_latest_checkpoint(model_base_path: str) -> str:
-    """Finds the latest checkpoint directory for the given language."""
-    checkpoints = [d for d in os.listdir(model_base_path) if d.startswith("checkpoint")]
-    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))  # Sort by checkpoint number
-    return os.path.join(model_base_path, checkpoints[-1])
+def find_latest_checkpoint(model_path: str) -> str:
+    """
+    Finds the latest checkpoint directory within the given model folder.
+    """
+    # Try loading from Hugging Face if not found locally
+    print(f"Model not found locally. Attempting to load from Hugging Face: {model_path}")
+    try:
+        AutoAdapterModel.from_pretrained(model_path)
+        model = model_path
+        return model
+    except Exception as e:
+        print(f"Model not found in local directories or Hugging Face: {e}")
 
+    checkpoints = [d for d in os.listdir(model_path) if d.startswith("checkpoint")]
+    if not checkpoints:
+        return model_path  # If no checkpoint folders, assume model is in base path
+    
+    checkpoints.sort(key=lambda x: int(x.split('-')[-1]))  # Sort by checkpoint number
+    return os.path.join(model_path, checkpoints[-1])  # Return latest checkpoint path
+   
 # Load dataset for topic classification
 dataset = load_dataset('Davlan/sib200', args.language)
 categories = dataset["train"].unique("category")
@@ -46,8 +60,14 @@ def encode_category(example):
 
 dataset = dataset.map(encode_category)
 
+# Load model and adapter
+model_path = find_latest_checkpoint(args.model_path)
+config = AutoConfig.from_pretrained(model_path)
+model = AutoAdapterModel.from_pretrained(model_path, config=config)
+print("Original number of model parameters:", model.num_parameters())
+
 # Use tokenizer path if provided, otherwise use model path
-tokenizer_path = args.tokenizer_path if args.tokenizer_path else args.model_path
+tokenizer_path = args.tokenizer_path if args.tokenizer_path else model_path
 
 def encode_batch(examples):
     """Encodes a batch of input data using the model tokenizer."""
@@ -68,12 +88,6 @@ dataset.set_format(columns=["input_ids", "attention_mask", "labels"])
 train_dataset = dataset["train"]
 val_dataset = dataset["validation"]
 test_dataset = dataset["test"]
-
-# Load model and adapter
-model_path = find_latest_checkpoint(args.model_path)
-config = AutoConfig.from_pretrained(model_path)
-model = AutoAdapterModel.from_pretrained(model_path, config=config)
-print("Original number of model parameters:", model.num_parameters())
 
 # Add classification head and set active adapter
 adapter_name = f"topic_classification_{args.language}"
