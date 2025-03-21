@@ -7,7 +7,7 @@ pip install transformers[torch]
 
 SCRIPT="finetune_sa.py"
 
-mkdir -p ./tc
+mkdir -p ./sa
 
 for SEED in 1 2 3; do
     echo "Running experiment with seed $SEED..."
