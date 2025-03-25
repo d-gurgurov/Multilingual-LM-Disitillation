@@ -14,13 +14,12 @@ def find_latest_checkpoint(model_path: str) -> str:
     Finds the latest checkpoint directory within the given model folder.
     """
     # Try loading from Hugging Face if not found locally
-    print(f"Model not found locally. Attempting to load from Hugging Face: {model_path}")
     try:
         AutoModelForMaskedLM.from_pretrained(model_path)
         model = model_path
         return model
     except Exception as e:
-        print(f"Model not found in local directories or Hugging Face: {e}")
+        print(f"Model not found on Hugging Face!")
 
     checkpoints = [d for d in os.listdir(model_path) if d.startswith("checkpoint")]
     if not checkpoints:
@@ -29,6 +28,10 @@ def find_latest_checkpoint(model_path: str) -> str:
     checkpoints.sort(key=lambda x: int(x.split('-')[-1]))  # Sort by checkpoint number
     return os.path.join(model_path, checkpoints[-1])  # Return latest checkpoint path
    
+from nltk.tokenize import word_tokenize
+import nltk
+nltk.download('punkt')
+
 class PseudoPerplexity:
     def __init__(self, model_path: str, device: torch.device):
         self.device = device
@@ -38,18 +41,25 @@ class PseudoPerplexity:
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
             
-
-    def __call__(self, sentences):
+    def __call__(self, sentences: list[str]) -> dict[str, list[float] | float]:
         pseudo_perplexities = []
         for sentence in tqdm(sentences, desc="Computing pseudo-perplexity"):
+            # Tokenize the sentence using the model's tokenizer
             tokenized_sentence = self.tokenizer.encode(
                 sentence, return_tensors="pt", truncation=True, max_length=512
             ).to(self.device)
             num_tokens = tokenized_sentence.shape[-1]
 
+            # Count the number of words in the sentence
+            num_words = len(word_tokenize(sentence))  # Using NLTK tokenizer for word count
+
+            # Calculate pseudo-log-likelihood and pseudo-perplexity
             pseudo_log_likelihood = self.pseudo_log_likelihood(tokenized_sentence)
             pseudo_perplexity = exp(-1 / num_tokens * pseudo_log_likelihood)
-            pseudo_perplexities.append(pseudo_perplexity)
+
+            # Normalize by word count
+            word_level_normalized_ppl = pseudo_perplexity / num_words
+            pseudo_perplexities.append(word_level_normalized_ppl)
         
         return {"values": pseudo_perplexities, "average": sum(pseudo_perplexities) / len(pseudo_perplexities)}
 
@@ -64,6 +74,7 @@ class PseudoPerplexity:
             probability = logits[token_position].softmax(dim=0)[original_token_id]
             pseudo_log_likelihood += log(probability)
         return pseudo_log_likelihood
+
 
 def compute_pseudo_perplexity(model_name: str, model_path: str, language_code: str, output_file: str):
     random.seed(42)
@@ -95,6 +106,6 @@ if __name__ == "__main__":
     latest_checkpoint = find_latest_checkpoint(args.model_path)
     output_file = os.path.join(args.output_dir, f"{args.model_path}_pseudo_perplexity.csv")
     avg_ppl = compute_pseudo_perplexity(args.model_path, latest_checkpoint, args.language_code, output_file)
-    print(model_name)
+    print(args.model_path)
     print(avg_ppl)
 
