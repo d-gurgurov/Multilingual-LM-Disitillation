@@ -5,6 +5,7 @@ import random
 import argparse
 from math import log, exp
 from tqdm import tqdm
+from typing import List
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
@@ -38,7 +39,7 @@ class PseudoPerplexity:
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
             
 
-    def __call__(self, sentences: list[str]) -> dict[str, list[float] | float]:
+    def __call__(self, sentences):
         pseudo_perplexities = []
         for sentence in tqdm(sentences, desc="Computing pseudo-perplexity"):
             tokenized_sentence = self.tokenizer.encode(
@@ -83,28 +84,17 @@ def compute_pseudo_perplexity(model_name: str, model_path: str, language_code: s
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models_path", type=str, required=True, help="Path to the folder containing model directories")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to the model directory or checkpoint")
     parser.add_argument("--tokenizer", type=str, default=None, help="Tokenizer path")
     parser.add_argument("--language_code", type=str, required=True, help="Language code for the FLORES-200 dataset")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output pseudo-perplexity results")
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
-    results = {}
     
-    for model_name in os.listdir(args.models_path):
-        model_path = os.path.join(args.models_path, model_name)
-        if not os.path.isdir(model_path):
-            continue  # Skip if not a directory
-        
-        latest_checkpoint = find_latest_checkpoint(model_path)
-        output_file = os.path.join(args.output_dir, f"{model_name}_pseudo_perplexity.csv")
-        avg_ppl = compute_pseudo_perplexity(model_name, latest_checkpoint, args.language_code, output_file)
-        print(model_name)
-        print(avg_ppl)
-        results[model_name] = avg_ppl
-    
-    pd.DataFrame.from_dict(results, orient="index", columns=["Average Pseudo-Perplexity"]).to_csv(
-        os.path.join(args.output_dir, "summary_pseudo_perplexity.csv")
-    )
-    print("\nAll results saved in:", args.output_dir)
+    latest_checkpoint = find_latest_checkpoint(args.model_path)
+    output_file = os.path.join(args.output_dir, f"{args.model_path}_pseudo_perplexity.csv")
+    avg_ppl = compute_pseudo_perplexity(args.model_path, latest_checkpoint, args.language_code, output_file)
+    print(model_name)
+    print(avg_ppl)
+
