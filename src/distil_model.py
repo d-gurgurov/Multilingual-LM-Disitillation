@@ -450,7 +450,7 @@ def create_student_model(layer_reduction_factor, parameterization='teacher', lay
         student_config = BertConfig.from_dict(config)
         student_model = BertForMaskedLM(student_config)
         print("Using BERT config!")
-    elif "xlm" in str(args.model_name).lower():
+    elif "xlm-r" in str(args.model_name).lower():
         student_config = XLMRobertaConfig.from_dict(config)
         student_model = XLMRobertaForMaskedLM(student_config)
         print("Using XLM-R config!")
