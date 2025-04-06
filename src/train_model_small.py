@@ -258,14 +258,14 @@ def create_student_model(layer_reduction_factor, parameterization='teacher', lay
     config['num_hidden_layers'] = num_hidden_layers
 
     # Create student config and model
-    if "bert" in str(args.model_name).lower():
-        student_config = BertConfig.from_dict(config)
-        student_model = BertForMaskedLM(student_config)
-        print("Using BERT config!")
-    elif "xlm-r" in str(args.model_name).lower():
+    if "xlm-r" in str(args.model_name).lower():
         student_config = XLMRobertaConfig.from_dict(config)
         student_model = XLMRobertaForMaskedLM(student_config)
         print("Using XLM-R config!")
+    elif "bert" in str(args.model_name).lower():
+        student_config = BertConfig.from_dict(config)
+        student_model = BertForMaskedLM(student_config)
+        print("Using BERT config!")
     else:
         raise ValueError("Unknown model type. Ensure model_name contains 'bert' or 'xlm'.")
 
