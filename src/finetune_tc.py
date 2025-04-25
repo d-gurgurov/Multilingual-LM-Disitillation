@@ -25,8 +25,10 @@ random.seed(seed_value)
 
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoConfig, TrainingArguments
-from adapters import AutoAdapterModel, AdapterConfig, AdapterTrainer
+from adapters import AutoAdapterModel, AdapterConfig, AdapterTrainer, BnConfig
 from adapters.composition import Stack
+from typing import List, Literal, Optional, Union
+from collections.abc import Mapping
 import evaluate
 
 def find_latest_checkpoint(model_path: str) -> str:
@@ -89,12 +91,59 @@ train_dataset = dataset["train"]
 val_dataset = dataset["validation"]
 test_dataset = dataset["test"]
 
-# Add classification head and set active adapter
 adapter_name = f"topic_classification_{args.language}"
-model.add_adapter(adapter_name)
+
+from dataclasses import dataclass
+
+@dataclass(eq=False)
+class SeqBnConfig(BnConfig):
+    """
+    The adapter architecture proposed by Pfeiffer et al. (2020). See https://arxiv.org/pdf/2005.00247.pdf.
+    """
+    original_ln_before: bool = True
+    original_ln_after: bool = True
+    residual_before_ln: Union[bool, str] = True
+    adapter_residual_before_ln: bool = False
+    ln_before: bool = False
+    ln_after: bool = False
+    mh_adapter: bool = False
+    output_adapter: bool = True
+    non_linearity: str = "relu"
+    reduction_factor: Union[float, Mapping] = 4
+
+    def to_dict(self):
+        # Convert Mapping to dict if necessary
+        reduction_factor = (
+            dict(self.reduction_factor) if isinstance(self.reduction_factor, Mapping) else self.reduction_factor
+        )
+        return {
+            "original_ln_before": self.original_ln_before,
+            "original_ln_after": self.original_ln_after,
+            "residual_before_ln": self.residual_before_ln,
+            "adapter_residual_before_ln": self.adapter_residual_before_ln,
+            "ln_before": self.ln_before,
+            "ln_after": self.ln_after,
+            "mh_adapter": self.mh_adapter,
+            "output_adapter": self.output_adapter,
+            "non_linearity": self.non_linearity,
+            "reduction_factor": reduction_factor,
+        }
+
+model.add_adapter(adapter_name, SeqBnConfig())
+
 num_labels = len(categories)
 model.add_classification_head(adapter_name, num_labels=num_labels)
+
 model.train_adapter([adapter_name])
+
+# Convert adapter config to a dict manually
+print(model.adapters_config.config_map)
+for adapter, obj in model.adapters_config.config_map.items():
+    adapter_config = model.adapters_config.config_map[adapter]
+    model.adapters_config.config_map[adapter] = adapter_config.to_dict()
+
+print(model.adapter_summary())
+
 
 # Create output directory
 model_name = os.path.basename(args.model_path)
