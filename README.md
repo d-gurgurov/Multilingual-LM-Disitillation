@@ -1,4 +1,8 @@
-# Knowledge Distillation for Multilingual Transformers
+# On Multilingual Encoder Language Model Compression for Low-Resource Languages
+
+[![arXiv](https://img.shields.io/badge/arXiv-2505.16956v1-b31b1b.svg)](https://arxiv.org/abs/2505.16956)
+
+In this paper, we combine two-step knowledge distillation, structured pruning, truncation, and vocabulary trimming for extremely compressing multilingual encoder-only language models for low-resource languages. Our novel approach systematically combines existing techniques and takes them to the extreme, reducing layer depth, feed-forward hidden size, and intermediate layer embedding size to create significantly smaller monolingual models while retaining essential language-specific knowledge. We achieve compression rates of up to 92% with only a marginal performance drop of 2-10% in four downstream tasks, including sentiment analysis, topic classification, named entity recognition, and part-of-speech tagging, across three low-resource languages. Notably, the performance degradation correlates with the amount of language-specific data in the teacher model, with larger datasets resulting in smaller performance losses. Additionally, we conduct extensive ablation studies to identify best practices for multilingual model compression using these techniques.
 
 ## Recent Work on Distillation (*through a multilingual lense*)
 
@@ -37,3 +41,16 @@ The student model is trained with the loss for the objective at hand (masked lan
 #### **The Privileged Students: On the Value of Initialization in Multilingual Knowledge Distillation** ([Wibowo et al., 2024](https://arxiv.org/abs/2406.16524))
 - **Initialization from fine-tuned teacher contributes the most**
 - **MSE instead of KL Divergence** → Faster convergence and higher performance
+
+
+```bibtex
+@misc{gurgurov2025multilingualencoderlanguagemodel,
+      title={On Multilingual Encoder Language Model Compression for Low-Resource Languages}, 
+      author={Daniil Gurgurov and Michal Gregor and Josef van Genabith and Simon Ostermann},
+      year={2025},
+      eprint={2505.16956},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2505.16956}, 
+}
+```
